@@ -1,0 +1,563 @@
+---
+title: "Predicting the Need for Hospitalization from COVID-19 Patients"
+subtitle: "PSTAT 131 Final Project"
+author: "Chloe Dinh-Luong"
+date: "2023-06-13"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    df_print: paged
+    theme: sandstone
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+```{r echo=FALSE, out.width = "100%", fig.align = "center"}
+knitr::include_graphics("/Users/chloe/Downloads/final-project/images/photo1.jpeg")
+```
+
+# Introduction
+Coronavirus disease (COVID-19) is an infectious disease caused by the SARS-CoV-2 virus that has been ongoing since 2019. Typically, individuals who are infected with COVID-19 experience mild to moderate respiratory symptoms and are able to recover without requiring medical attention. However, individuals who are older or immunocompromised are at higher risk of developing severe illness and require hospitalization and special treatment.
+
+Throughout the pandemic, healthcare providers have encountered a significant amount of challenges in terms of insufficient medical resources, inefficient distribution plans, and so much more. In these times of crisis, one of the greatest challenges hospitals encounter is whether or not they possess enough space to admit patients as the rapid spread of COVID-19 are causing hospitals to reach maximum capacity. The ability to predict the specific resources an individual may require upon testing positive would greatly assist healthcare workers in procuring and organizing the necessary resources for each patient, without overflowing the hospital. 
+
+```{r echo=FALSE, out.width = "100%", fig.align = "center"}
+knitr::include_graphics("/Users/chloe/Downloads/final-project/images/photo3.jpeg")
+```
+
+## Research Questions
+The aim of this project is to build a machine learning model that can predict if a COVID-19 patient requires hospitalization and special medical attention considering their current symptoms and medical history.
+
+Research Question: Based on their current symptoms and medical history, does the patient require hospitalization?
+
+## Data Description
+The [COVID-19 dataset](https://www.kaggle.com/datasets/meirnizri/covid19-dataset) is obtained through Kaggle, and its most recent update was in November 2022. It encompasses a vast amount of anonymized patient-related information, including pre-existing conditions. The raw dataset contains 21 predictors with 1,048,576 observations. For the purpose of this project, we will only be including predictors pertaining to patients current symptoms and medical history, which will take our dataset down to 15 predictors. Furthermore, with such a large amount of observations, we will also be decreasing the observation size to 5,000 in order to enhance the run time of our models.
+
+
+# Exploratory Data Analysis
+Prior to conducting any modeling, we want to ensure our data is clean and ready to go! When loading the data, it is important to acknowledge that not everything will be in an ideal state for immediate application. For that reason, we will have to go in and clean up our predictor names, convert certain variables into factors, and delete what we feel is unnecessary.
+
+## Loading Packages
+```{r}
+library(readr)
+library(janitor)
+library(finalfit)
+library(dplyr)
+library(tidyverse)
+library(corrr)
+library(corrplot)
+library(tidymodels)
+library(yardstick)
+library(parsnip)
+library(discrim)
+```
+
+## Loading and Exploring the Data
+```{r}
+# load data
+covid_data <- read.csv("final-project/data/unprocessed/coviddata.csv")
+
+# clean predictor names
+covid_data <- clean_names(covid_data)
+```
+
+A majority of the time, hospitals will have a patient's full medical background. But just in case, let's make sure there is no missing data!
+```{r}
+# replace 97, 98, and 99 with NA
+covid_data <- covid_data %>% 
+  mutate_all(~ replace(., . %in% c(97, 98, 99), NA))
+
+# plot missing values
+covid_data %>%
+  missing_plot()
+```
+
+Total number of missing values:
+```{r}
+# number of missing values
+sum(is.na(covid_data))
+```
+Looks like we were wrong! There is a lot of missing data for the `intubed` variable, `pregnant` variable, and `icu` variable. However, the rest of the variables do not seem to be missing much data. It's great to see that hospitals are thorough with each of their patients, having their medical history up-to-date and on file. This can expedite the process of being evaluated for hospitalization as healthcare workers can check whether or not the patient's medical history calls for medical attention.
+
+
+## Tidying the Data
+Here, we will be removing predictors that we feel are unnecessary, as well as reducing our observations to 5,000. Because this dataset contains some predictors that are unrelated to a patient's medical history, we will be dropping those variables. And as we said before, the raw dataset contains 1,048,576 observations which would take forever to run! So to make things easier, we will cut it down to 5,000. Furthermore, in this section, we will also be changing our response variable `patient_type` to a factor, allowing "Yes" to indicate that the patient requires hospitalization, and "No" to indicate that the patient does not require hospitalization and can be released. Now that we've established that, let's get started!
+
+```{r}
+# remove unnecessary predictors
+drop <- c("usmer", "medical_unit", "intubed", "pregnant", "icu", "date_died")
+covid_data = covid_data[,!(names(covid_data) %in% drop)]
+
+# make patient_type a factor
+covid_data$patient_type <- factor(covid_data$patient_type,
+                                  labels = c("No", "Yes"))
+
+# remove NA values
+covid_data <- na.omit(covid_data)
+
+# select 5,000 observations
+covid_data <- covid_data %>%
+  sample_n(5000, replace = TRUE)
+```
+
+Now, we display the current dimensions of our dataset after removing certain variables.
+```{r}
+# current dimensions
+covid_data %>% dim()
+```
+Below, we can take a quick peek at our dataset.
+```{r}
+# first several rows
+covid_data %>% head()
+```
+
+## Describing the Predictors
+After tidying our data, we have predictors that can help determine if a COVID-19 patient needs hospitalization based on their current medical status and medical history. The following predictors serve as indicators for determining whether a patient is immunocompromised, with a majority being a certain type of disease or illness. In the Boolean features, 1 means "yes" and 2 means "no".
+
+- `sex`: 1 for female and 2 for male.
+- `age`: of the patient.
+- `classification`: covid test findings. Values 1-3 mean that the patient was diagnosed with covid in different degrees. 4 or higher means that the patient is not a carrier of covid or that the test is inconclusive.
+- `pneumonia`: whether the patient already have air sacs inflammation or not.
+- `diabetes`: whether the patient has diabetes or not.
+- `copd`: Indicates whether the patient has Chronic obstructive pulmonary disease or not.
+- `asthma`: whether the patient has asthma or not.
+- `inmsupr`: whether the patient is immunosuppressed or not.
+- `hypertension`: whether the patient has hypertension or not.
+- `cardiovascular`: whether the patient has heart or blood vessels related disease.
+- `renal chronic`: whether the patient has chronic renal disease or not.
+- `other disease`: whether the patient has other disease or not.
+- `obesity`: whether the patient is obese or not.
+- `tobacco`: whether the patient is a tobacco user.
+
+```{r echo=FALSE, out.width = "100%", fig.align = "center"}
+knitr::include_graphics("/Users/chloe/Downloads/final-project/images/photo4.jpeg")
+```
+
+## Visual EDA
+Our data is ready to be visualized! In this section, we will be generating an output variable plot and a correlation matrix to gain a deeper understanding of the distribution of our response variable and predictors. Furthermore, we will be creating visualization plots to observe how specific variables affect our response variable.
+
+### Hospitalization Distribution
+With hospitals reaching capacity, they have to ensure that COVID-19 patients with high risk of illness or extreme respiratory symptoms are prioritized. Those who have a low risk of illness or mild to moderate respiratory symptoms can be sent home as they can treat their symptoms without medical assistance. As we can see below, "No" for hospitalization outweighs the "Yes" for hospitalization as healthcare workers try to only accept severe cases into the hospital. 
+```{r}
+# distribution of hospitalization
+covid_data %>%
+  ggplot(aes(x = patient_type)) +
+  geom_bar() +
+  labs(x = "Hospitalization", y = "# of Patients", title = "Distribution of the Number of Patients Hospitalized")
+```
+
+From our chart, we can deduce that the number of patients hospitalized is about 25% the number of patients sent home as the "No" bar is just short of 4,000 patients while the "Yes" bar is just over 1,000 patients.
+
+### Variable Correlation Plot
+To gain insight into the relationships among our numerical variables, we will generate a correlation matrix and create a heat map representing the correlation.
+```{r}
+# make correlation matrix and heat map
+covid_data %>%
+  select_if(is.numeric) %>%
+  cor() %>%
+  corrplot()
+```
+
+Looking at our correlation matrix and heat map, there is one thing notable: a straight line going across! In this case, all the disease-related variables within this square are expected to exhibit a little correlation.
+
+### Classification
+The "classification" predictor in the COVID-19 dataset provides information about the COVID test findings for each patient. It is a categorical variable that indicates whether the patient was diagnosed with COVID-19 and to what degree. The values range from 1 to 3, representing different degrees of COVID-19 diagnosis, while a value of 4 or higher indicates that the patient is not a carrier of COVID-19 or that the test results are inconclusive. This predictor plays a crucial role in determining whether a COVID-19 patient requires hospitalization, as patients with a higher degree of COVID-19 diagnosis may be at a greater risk of developing severe illness and needing specialized medical attention. By including the "classification" predictor into a machine learning model, healthcare workers can make predictions about the hospitalization needs of COVID-19 patients based on their test findings, contributing to more efficient allocation of medical resources and better patient care.
+```{r}
+ggplot(covid_data, aes(clasiffication_final)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Pneumonia
+The "pneumonia" predictor in the COVID-19 dataset provides information about whether the patient already has air sacs inflammation, which is indicative of pneumonia. It is a binary variable, where a value of 1 represents the presence of pneumonia, and a value of 2 indicates the absence of pneumonia. Pneumonia is a common complication of COVID-19 and can significantly worsen the respiratory symptoms and overall condition of infected individuals. By including the "pneumonia" predictor in the analysis, healthcare providers can assess the severity of the patient's respiratory involvement and make more informed decisions regarding the need for hospitalization and special medical attention. 
+```{r}
+ggplot(covid_data, aes(pneumonia)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Diabetes
+The "diabetes" predictor in the COVID-19 dataset provides information about whether the patient has diabetes or not. It is a binary variable, where a value of 1 indicates that the patient has diabetes, and a value of 2 indicates the absence of diabetes. Diabetes is a chronic medical condition that affects the body's ability to regulate blood sugar levels, and individuals with diabetes may have compromised immune systems and be more vulnerable to infections, including COVID-19. By including the "diabetes" predictor in the analysis, healthcare providers can identify patients with diabetes who may be at a higher risk of experiencing severe illness or complications from COVID-19.
+```{r}
+ggplot(covid_data, aes(diabetes)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Chronic Obstructive Pulmonary Disease (COPD)
+The "copd" predictor in the COVID-19 dataset provides information about whether the patient has Chronic Obstructive Pulmonary Disease (COPD) or not. It is a binary variable, where a value of 1 indicates the presence of COPD, and a value of 2 indicates the absence of COPD. COPD is a chronic inflammatory lung disease that obstructs airflow and makes breathing difficult. COVID-19 can pose a greater risk to individuals with pre-existing respiratory conditions like COPD, as the virus can further exacerbate their respiratory symptoms and lead to severe complications. By including the "copd" predictor in the analysis, healthcare providers can identify patients with COPD who may require additional medical attention, ensuring that they receive the necessary support to alleviate their respiratory symptoms and mitigate the risk of further complications. 
+```{r}
+ggplot(covid_data, aes(copd)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Asthma
+The "asthma" predictor in the COVID-19 dataset provides information about whether the patient has asthma or not. It is a binary variable, where a value of 1 indicates the presence of asthma, and a value of 2 indicates the absence of asthma. Asthma is a chronic respiratory condition characterized by inflammation and narrowing of the airways, leading to recurrent episodes of wheezing, coughing, and shortness of breath. COVID-19 can pose an increased risk to individuals with asthma, as viral respiratory infections can trigger asthma exacerbations and potentially worsen their respiratory symptoms. By including the "asthma" predictor in the analysis, healthcare providers can identify patients with asthma who may be at a higher risk of developing severe illness or complications from COVID-19, and minimize the impact of the virus on their respiratory health. 
+```{r}
+ggplot(covid_data, aes(asthma)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Immunosuppressed (inmsupr)
+The "inmsupr" predictor in the COVID-19 dataset provides information about whether the patient is immunosuppressed or not. It is a binary variable, where a value of 1 indicates that the patient is immunosuppressed, and a value of 2 indicates that the patient is not immunosuppressed. Immunosuppression refers to a condition in which the immune system is weakened or suppressed, making individuals more susceptible to infections and less capable of mounting an effective immune response. COVID-19 can pose a higher risk to immunosuppressed individuals, as their weakened immune system may struggle to fight off the virus and prevent severe illness. By including the "inmsupr" predictor in the analysis, healthcare providers can identify patients who are immunosuppressed and may require closer monitoring and specialized care. 
+```{r}
+ggplot(covid_data, aes(inmsupr)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Hypertension
+The "hypertension" predictor in the COVID-19 dataset provides information about whether the patient has hypertension or not. It is a binary variable, where a value of 1 indicates the presence of hypertension, and a value of 2 indicates the absence of hypertension. Hypertension, also known as high blood pressure, is a common medical condition characterized by elevated blood pressure levels. COVID-19 can pose a greater risk to individuals with hypertension, as they may have underlying cardiovascular issues that make them more susceptible to severe illness and complications. By including the "hypertension" predictor in the analysis, healthcare providers can identify patients with hypertension who may require special treatment, as individuals with hypertension may be at an increased risk of developing severe cardiovascular complications from COVID-19. 
+```{r}
+ggplot(covid_data, aes(hipertension)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Cardiovascular
+The "cardiovascular" predictor in the COVID-19 dataset provides information about whether the patient has heart or blood vessels related disease. It is a binary variable, where a value of 1 indicates the presence of a cardiovascular condition, and a value of 2 indicates the absence of such a condition. COVID-19 can pose a significant risk to individuals with pre-existing cardiovascular diseases, as the virus can exacerbate their symptoms and lead to severe complications. By including the "cardiovascular" predictor in the analysis, healthcare providers can identify patients with cardiovascular conditions who may be at a higher risk of developing severe illness or complications from COVID-19. 
+```{r}
+ggplot(covid_data, aes(cardiovascular)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Renal Chronic
+The "renal chronic" predictor in the COVID-19 dataset provides information about whether the patient has chronic renal disease or not. It is a binary variable, where a value of 1 indicates the presence of chronic renal disease, and a value of 2 indicates the absence of such a condition. Chronic renal disease, also known as chronic kidney disease, is a long-term condition characterized by the gradual loss of kidney function over time. COVID-19 can pose a higher risk to individuals with chronic renal disease, as their compromised kidney function may make them more susceptible to severe illness and complications. By including the "renal chronic" predictor in the analysis, healthcare providers can identify patients with chronic renal disease and if they require hospitalization as individuals with chronic renal disease may be at an increased risk of developing kidney-related complications from COVID-19.
+```{r}
+ggplot(covid_data, aes(renal_chronic)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Other Disease
+The "other disease" predictor in the COVID-19 dataset provides information about whether the patient has any other disease or not. It is a binary variable, where a value of 1 indicates the presence of another disease, and a value of 2 indicates the absence of any other disease. This predictor accounts for any additional medical conditions that are not specifically captured by the other predictors in the dataset. COVID-19 can have varied impacts on individuals with different underlying health conditions, and the presence of other diseases can further complicate the course of the illness. By including the "other disease" predictor in the analysis, healthcare providers can identify patients with additional medical conditions to assess if they may need specific treatment.
+```{r}
+ggplot(covid_data, aes(other_disease)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Obesity
+The "obesity" predictor in the COVID-19 dataset provides information about whether the patient is obese or not. It is a binary variable, where a value of 1 indicates the presence of obesity, and a value of 2 indicates the absence of obesity. Obesity is a medical condition characterized by excessive body fat accumulation, which can have significant implications for overall health and increase the risk of various diseases. COVID-19 can pose a higher risk to individuals who are obese, as obesity is associated with underlying metabolic and cardiovascular abnormalities that can worsen the impact of the virus. By including the "obesity" predictor in the analysis, healthcare providers can identify patients who are obese and require additional attention and support.
+```{r}
+ggplot(covid_data, aes(obesity)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+### Tobacco
+The "tobacco" predictor in the COVID-19 dataset provides information about whether the patient is a tobacco user or not. It is a binary variable, where a value of 1 indicates that the patient uses tobacco, and a value of 2 indicates that the patient does not use tobacco. Tobacco use, particularly through smoking, can have detrimental effects on respiratory health and overall well-being. In the context of COVID-19, tobacco users may face an increased risk of severe illness and complications. Smoking can weaken the immune system, damage the lungs, and impair respiratory function, making individuals more vulnerable to respiratory infections like COVID-19. By including the "tobacco" predictor in the analysis, healthcare providers can identify patients who use tobacco as they may require closer monitoring and tailored treatment plans as they can experience more severe respiratory symptoms.
+```{r}
+ggplot(covid_data, aes(tobacco)) + 
+  geom_bar(aes(fill = patient_type)) +
+  scale_fill_manual(values = c("#FF6666", "#A4D86E"))
+```
+
+
+# Setting Up Models
+Wow that was a lot! Now, that we have gained a better understanding of the influential variables that determine the need for hospitalization, let's move onto building our models. In this part, we will be randomly splitting our data into training and testing sets, setting up and creating our recipe, and establishing cross-validation within our models.
+```{r echo=FALSE, out.width = "100%", fig.align = "center"}
+knitr::include_graphics("/Users/chloe/Downloads/final-project/images/photo5.webp")
+```
+
+## Train/Test Split
+Before fitting any models, our first step is to split the data into a training set and a testing set. The training set is used to train the models, while the testing set is used to evaluate their performance on new data. The goal is to avoid overfitting, where the model becomes too specific to the training data. We split the data into a 75/25 ratio, with 75% going to the training set and 25% to the testing set. This way, most of our data is being used to train the model but still has enough data to test the model on.
+
+```{r}
+# split
+set.seed(3435)
+covid_split <- initial_split(covid_data, prop = 0.75, 
+                              strata = "patient_type")
+
+# train and test
+covid_train <- training(covid_split)
+covid_test <- testing(covid_split)
+```
+
+```{r}
+# dimenstions of training dataset
+dim(covid_train)
+```
+
+```{r}
+# dimensions of testing dataset
+dim(covid_test)
+```
+
+## Recipe Building
+Now, we move onto recipe building. Recipe building is an essential step in preparing data for predictive modeling. To build a recipe for predicting the need for hospitalization (`patient_types`), the following steps are taken. 
+
+First, a recipe is created using the `recipe()` function. The response variable is patient_type, and the predictors include `sex`, `age`, `clasiffication_final`, `pneumonia`, `diabetes`, `copd`, `asthma`, `inmsupr`, `hipertension`, `cardiovascular`, `renal_chronic`, `other_disease`, `obesity`, and `tobacco`. The data used for building the recipe is specified as `covid_train`.
+
+Next, two preprocessing steps are applied to the predictors: `step_scale()` and `step_center()`. `step_scale()` scales all predictor variables to have zero mean and unit variance. `step_center()` centers all predictor variables around their mean value.
+
+```{r}
+# build recipe
+covid_recipe <- recipe(patient_type ~ sex + age + clasiffication_final +
+                         pneumonia + diabetes + copd + 
+                         asthma + inmsupr + hipertension + cardiovascular +
+                         renal_chronic + other_disease + obesity + tobacco,
+                        data=covid_train) %>%
+  step_scale(all_predictors()) %>%
+  step_center(all_predictors())
+```
+
+## K-Fold Cross Validation
+K-Fold Cross Validation is used to assess the performance and generalization ability of a predictive model. It involves dividing the available dataset into k equal-sized subsets or folds. The model is then trained on k-1 folds and evaluated on the remaining fold. This process is repeated k times, with each fold serving as the validation set exactly once. The performance metrics obtained from each iteration are averaged to provide an overall estimate of the model's performance.
+
+We will perform stratified k-fold cross-validation using 10 folds in our case. This approach involves partitioning the training data into 10 equally sized folds. For each fold, a testing set is created, which includes that particular fold, while the remaining k-1 folds are used as the training set. This process is repeated for all folds, resulting in a total of k folds. By utilizing this approach, we can effectively evaluate the performance of our model on multiple subsets of the data and obtain reliable performance metrics.
+```{r}
+# k-fold
+covid_folds <- vfold_cv(covid_train, v = 10, strata = patient_type)
+```
+
+To save computing time, we will store the results of our models in an RDA file. This way, once we have the desired model, we can easily load it later without having to rebuild it from scratch.
+```{r}
+# save
+save(covid_folds, covid_recipe, covid_train, covid_test, file = "/Users/chloe/Downloads/final-project/rda/covid_Model_Setup.rda")
+
+write.csv(covid_data, file = "/Users/chloe/Downloads/final-project/data/processed/covid_data.csv")
+```
+
+# Model Building
+Most models in the machine learning workflow follow a similar process, but there are exceptions for simpler and quicker models like Logistic Regression, Linear Discriminant Analysis, and Quadratic Discriminant Analysis. The general workflow of the model building process consists of the following steps:
+
+1. Model Setup: The first step involves setting up the model by specifying its type, engine, and mode. In our case, the mode is always set to `classification`.
+
+2. Workflow Setup: Next, we set up the workflow for the model, adding the new model to be trained and incorporating the established recipe we created earlier.
+
+We will skip the steps 3-5 for Logistic Regression, Linear Discriminant Analysis, and Quadratic Discriminant Analysis.
+
+3. Tuning Grid Setup: This step involves specifying the parameters we want to tune and defining the ranges for exploring different levels of tuning for each parameter.
+
+4. Hyperparameter Tuning: The next step is to tune the model using the specified hyperparameters. This process involves searching for the optimal combination of hyperparameters that yields the best performance.
+
+5. Model Selection: Once the tuning is complete, we select the most accurate model from the tuning grid based on the performance metrics. This model will be chosen as the final model for our workflow.
+
+6. Finalizing the Workflow: After selecting the model, we finalize the workflow by incorporating the specific tuning parameters that produced the best results.
+
+7. Model Fitting: Lastly, the selected model is then fitted to the covid training dataset using the finalized workflow. This allows the model to learn from the data and capture the underlying patterns.
+
+Results Saving: Finally, we save the results of the trained model to an RDA file. This step enables us to store the model and its associated performance metrics, allowing us to easily load and access them in our main project file at a later time.
+
+# Model Results
+Given our dataset is 5,000 observations, the execution time for our models was relatively shorter compared to if we were to use our raw dataset of 1,048,576 observations. We have successfully completed the training and saved the models along with their respective outcomes and scores. Now, we will proceed to load the saved results of each model and begin analyzing their individual performances. By examining the performance metrics and outcomes, we can gain insights into how well each model performed and make informed decisions based on their respective performances.
+```{r}
+# load models
+load("/Users/chloe/Downloads/final-project/rda/covid_Model_Setup.rda")
+load("/Users/chloe/Downloads/final-project/rda/covid_Decision_Tree.rda")
+load("/Users/chloe/Downloads/final-project/rda/covid_Lasso_Regression.rda")
+load("/Users/chloe/Downloads/final-project/rda/covid_Linear_Discriminant.rda")
+load("/Users/chloe/Downloads/final-project/rda/covid_Logistic_Regression.rda")
+load("/Users/chloe/Downloads/final-project/rda/covid_Quadratic_Discriminant.rda")
+load("/Users/chloe/Downloads/final-project/rda/covid_Random_Forest.rda")
+load("/Users/chloe/Downloads/final-project/rda/covid_Support_Vector_Machine.rda")
+```
+
+## Visualizing Results
+When it comes to visualizing the results of tuned models, the autoplot function is an invaluable tool. It allows us to visualize how changes in specific parameters impact our chosen metric, such as roc_auc. In this next section, we will be presenting the plots for the models with high, medium, and low ROC AUC values. These plots will provide us with valuable insights into the effects of parameter variations on model performance, aiding us in further analysis and decision-making.
+
+### Random Forest
+A random forest model is a powerful supervised ensemble learning technique that consists of multiple decision trees. Unlike individual decision tree models, which tend to overfit the training data, a random forest overcomes this limitation by aggregating the predictions of each decision tree and generating a final output. By combining multiple classifiers, the random forest algorithm improves its overall performance and generalization ability.
+
+In our random forest model, we focus on tuning three key hyperparameters:
+
+- `mtry`: represents the number of variables randomly sampled at each split
+- `trees`: represents the number of trees present in the random forest model.
+- `min_n`: represents the minimum number of data values required in a tree node for further splitting.
+
+The ROC AUC scores exhibit considerable variation depending on the number of trees used. However, it is evident that increasing the number of trees generally leads to higher ROC AUC scores. Notably, the optimal node size is 46, with 60 trees, and 2 randomly selected predictors. The random forest model appears to be the most effective choice.
+```{r}
+autoplot(covid_rf_tune_res_auc)
+```
+
+### Support Vector Machine
+In a support vector machine model, each data point is plotted as a point in an n-dimensional space, where n represents the number of features. The values of the features determine the coordinates of each point. The support vectors are the coordinates of the individual observations. The classification is achieved by finding the hyperplane that best separates the two classes. From the plot below, we can observe that the support vector machine model did fairly well, but nowhere near as well as our random forest model.
+```{r}
+autoplot(covid_svm_auc_tune_res)
+```
+
+### Decision Tree
+As for a decision tree model, the dataset is recursively partitioned based on different features and their thresholds. Each partition represents a decision or a rule that leads to a specific outcome. The model learns to make predictions by following the path from the root node to the leaf nodes, where the final predictions are made. The decision tree model tends to capture complex interactions and nonlinear relationships in the data. Like the support vector machine model, the decision tree model does fairly well, however when compared to the other models, it is considered our poorest performing model.
+```{r}
+autoplot(covid_dt_tune_res)
+```
+
+
+## Model Accuracies
+To summarize the best ROC AUC values obtained from our seven models, we will generate a tibble, which is a versatile data structure similar to a table. This tibble will display the estimated final ROC AUC value for each fitted model. By organizing this information in a structured format, we can easily compare and analyze the performance of each model in terms of their ROC AUC values.
+```{r}
+# roc auc all models
+covid_log_reg_auc <- augment(covid_log_fit, new_data = covid_train) %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+covid_lda_auc <- augment(covid_lda_fit, new_data = covid_train) %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+covid_qda_auc <- augment(covid_qda_fit, new_data = covid_train) %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+covid_lasso_auc <- augment(covid_lasso_final_fit, new_data = covid_train) %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+covid_decision_tree_auc <- augment(covid_dt_final_fit, new_data = covid_train) %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+covid_random_forest_auc <- augment(covid_rf_final_fit_auc, new_data = covid_train) %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+covid_svm_auc <- augment(covid_svm_final_fit_auc, new_data = covid_train) %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+
+covid_roc_aucs <- c(
+  covid_log_reg_auc$.estimate,
+  covid_lda_auc$.estimate,
+  covid_qda_auc$.estimate,
+  covid_lasso_auc$.estimate,
+  covid_decision_tree_auc$.estimate,
+  covid_random_forest_auc$.estimate,
+  covid_svm_auc$.estimate
+)
+
+covid_mod_names <- c(
+  "Logistic Regression",
+  "LDA",
+  "QDA",
+  "Lasso",
+  "Decision Tree",
+  "Random Forest",
+  "Support Vector Machine"
+)
+```
+
+```{r}
+# roc auc all models results
+covid_results <- tibble(Model = covid_mod_names,
+                             ROC_AUC = covid_roc_aucs)
+
+covid_results <- covid_results %>% 
+  dplyr::arrange(-covid_roc_aucs)
+
+covid_results
+```
+
+Based on the tibble, we can observe that the Random Forest model exhibited the highest overall performance, closely followed by LDA. However, it is important to note that these scores are based on the models fitted to the training data only. To truly evaluate their performance, we need to assess their predictions on the reserved testing data. We will proceed with the Random Forest model as our primary choice for the testing dataset to gain further insights. Now, let's analyze their true performances on our testing dataset.
+
+# Results From The Best Model
+With the Random Forest model identified as our best performer, it's time to dive into the analysis of its actual results!
+
+## Random Forest Best Model
+Since our random forest model performed the best overall, we now want to see how well it can predict outcomes on new data that it hasn't encountered before. The high ROC AUC scores we observed earlier were based on the model's performance on the training data it was trained on, which explains why it showed strong results. Now, it's time to test its capabilities on fresh data and see if it maintains its impressive performance!
+```{r}
+# best random forest
+show_best(covid_rf_tune_res_auc, metric = "roc_auc") %>%
+  select(-.estimator, .config) %>%
+  slice(1)
+```
+
+It looks like Model 091 performed the best overall from all the random forest models! With our best-performing model in hand, it's time to apply it to our testing data and evaluate its actual performance in predicting the hospitalization needs of COVID-19 patients. By fitting our model to this independent dataset, we can assess how well it generalizes to real-world scenarios and obtain a more accurate measure of its predictive capabilities. Let's proceed and uncover the true performance of our model on the testing data.
+
+### Final ROC AUC Results
+Here, we will be checking the ROC AUC performance results of Model 091 on our testing dataset.
+```{r}
+# roc auc of best random forest
+covid_rf_roc_auc <- augment(covid_rf_final_fit_auc, new_data = covid_test, type = 'prob') %>%
+  roc_auc(patient_type, .pred_No) %>%
+  select(.estimate)
+
+covid_rf_roc_auc
+```
+With this final ROC AUC score on our testing data, our model performed exceptionally well! An ROC AUC value in the range of 0.8 to 0.9 is generally considered very good, indicating a high level of predictive accuracy. Our model's score falls within this range, demonstrating its ability to effectively predict the need for hospitalization in COVID-19 patients.
+
+### ROC Curve
+To visualize our AUC score, we will plot the ROC curve. The ROC curve provides a graphical representation of the model's performance in terms of sensitivity and specificity. The curve's position towards the upper left reflects the model's AUC performance. The closer the curve is to the top left corner, the better the AUC score of the model. As we can see from our curve, the upward and leftward direction of the curve indicates that our model performs increasingly better in terms of its ability to accurately classify positive instances while minimizing false positives. 
+```{r}
+# curve
+augment(covid_rf_final_fit_auc, new_data = covid_test, type = 'prob') %>%
+  roc_curve(patient_type, .pred_No) %>%
+  autoplot()
+```
+
+# Putting the Model to the Test
+Now that our model is finished and refined, let's test its practicality in predicting the hospitalization needs of COVID-19 patients. To assess its effectiveness, we will feed the model with sample data and examine its ability to accurately predict whether hospitalization is required.
+```{r echo=FALSE, out.width = "100%", fig.align = "center"}
+knitr::include_graphics("/Users/chloe/Downloads/final-project/images/photo7.jpeg")
+```
+
+## Hospitalization 'Yes' Test
+```{r}
+covid_yes_example <- data.frame(
+  sex = 1,
+  age = 65,
+  clasiffication_final = 3,
+  pneumonia = 1,
+  diabetes = 1,
+  copd = 2,
+  asthma = 2,
+  inmsupr = 2,
+  hipertension = 2,
+  cardiovascular = 2,
+  renal_chronic = 2,
+  other_disease = 2,
+  obesity = 2,
+  tobacco = 2
+)
+```
+
+```{r}
+predict(covid_rf_final_fit_auc, covid_yes_example, type = "class")
+```
+
+## Hospitalization 'No' Test
+```{r}
+covid_no_example <- data.frame(
+  sex = 1,
+  age = 23,
+  clasiffication_final = 3,
+  pneumonia = 2,
+  diabetes = 2,
+  copd = 2,
+  asthma = 2,
+  inmsupr = 2,
+  hipertension = 2,
+  cardiovascular = 2,
+  renal_chronic = 2,
+  other_disease = 2,
+  obesity = 2,
+  tobacco = 2
+)
+```
+
+```{r}
+predict(covid_rf_final_fit_auc, covid_no_example, type = "class")
+```
+
+# Conclusion
+In conclusion, we conducted an extensive analysis of various machine learning models to predict the hospitalization needs of COVID-19 patients based on their symptoms and medical history. Among the models tested, the random forest model emerged as the top performer, achieving a high ROC AUC score on the training data. In comparison, the linear discriminant analysis model also demonstrated promising results, however, the decision tree model exhibited relatively poorer performance, with the lowest ROC AUC score.
+
+Notably, the random forest maintained its excellent performance on the testing data, obtaining a high final ROC AUC score. This indicates its robust predictive capabilities and confirms its suitability for real-world applications. The analysis of the random forest model on the testing dataset has provided further insights into its effectiveness. Therefore, we can confidently conclude that the random forest model stands out as the most reliable and accurate model for predicting the hospitalization needs of COVID-19 patients.
+
+By developing such a powerful machine learning model, healthcare workers can efficiently allocate resources and manage hospital capacities during the ongoing pandemic. This will significantly contribute to improving patient outcomes and optimizing healthcare services.
+
+```{r echo=FALSE, out.width = "100%", fig.align = "center"}
+knitr::include_graphics("/Users/chloe/Downloads/final-project/images/photo6.jpeg")
+```
