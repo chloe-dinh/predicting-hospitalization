@@ -10,3 +10,5 @@ The data is preprocessed, split into training and testing sets, and machine lear
 
 # Conclusion
 This project aims to aid healthcare providers in identifying patients requiring hospitalization. The random forest model shows promise in predicting hospitalization needs, potentially easing the strain on healthcare systems during the COVID-19 pandemic.
+
+For more details on the project and its findings, please refer to the full report.
